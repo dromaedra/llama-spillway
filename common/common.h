@@ -655,6 +655,11 @@ struct common_params {
     bool prefill_assistant = true; // if true, any trailing assistant message will be prefilled into the response
     int sleep_idle_seconds = -1;   // if >0, server will sleep after this many seconds of idle time
 
+    bool power_switch_gpu   = false; // PowerMizer mode 1 on all NVIDIA GPUs while the server has work
+    bool power_switch_cpu   = false; // power-profiles-daemon performance hold while the server has work
+    int  power_switch_idle  = 10;    // seconds without work before the power settings are released
+    int  power_switch_check = 0;     // seconds between CPU hold checks, 0 = disabled
+
     std::vector<std::string> api_keys;
 
     std::string ssl_file_key  = "";                                                                         // NOLINT

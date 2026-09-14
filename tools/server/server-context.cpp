@@ -6,6 +6,7 @@
 #include "server-queue.h"
 #include "server-schema.h"
 #include "server-stream.h"
+#include "server-power.h"
 
 #include "build-info.h"
 #include "common.h"
@@ -933,6 +934,8 @@ private:
 
     bool sleeping = false;
 
+    std::unique_ptr<server_power> power; // null unless --power-switch-gpu or --power-switch-cpu
+
     int64_t t_last_load_progress_ms = 0;
 
     void destroy() {
@@ -1009,6 +1012,14 @@ private:
         load_progress_data load_progress_spec  (this, "spec_model");
 
         const bool is_resume = sleeping;
+
+        // hold the power settings during the load too; the first idle scan starts the release timer
+        if (!is_resume) {
+            power = server_power_init(params);
+        }
+        if (power) {
+            power->set_busy();
+        }
 
         params_base = params;
         const auto output_limits = server_output_limits(params_base);
@@ -1822,6 +1833,10 @@ private:
         slot.state = slot.task->is_child()
             ? SLOT_STATE_WAIT_OTHER // wait for the parent to process prompt
             : SLOT_STATE_STARTED;
+
+        if (power) {
+            power->set_busy();
+        }
 
         // reset server kill-switch counter
         n_empty_consecutive = 0;
@@ -2803,6 +2818,10 @@ private:
                 SRV_TRC("%s", "all slots are idle\n");
 
                 metrics_flush_idle();
+
+                if (power) {
+                    power->set_idle();
+                }
 
                 return; // skip further processing
 

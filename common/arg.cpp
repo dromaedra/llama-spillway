@@ -3857,6 +3857,40 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(
+        {"--power-switch-gpu"},
+        "set NVIDIA PowerMizer mode 1 (prefer maximum performance) on all GPUs while the server has work (Linux only, default: disabled)",
+        [](common_params & params) {
+            params.power_switch_gpu = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--power-switch-cpu"},
+        "hold the power-profiles-daemon performance profile while the server has work (Linux only, default: disabled)",
+        [](common_params & params) {
+            params.power_switch_cpu = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--power-switch-idle"}, "SECONDS",
+        string_format("seconds without work before the power switch releases its settings (default: %d)", params.power_switch_idle),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("invalid value: cannot be negative");
+            }
+            params.power_switch_idle = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--power-switch-check"}, "SECONDS",
+        string_format("while the CPU hold is active, check every N seconds that it still exists (default: %d; 0 = disabled)", params.power_switch_check),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("invalid value: cannot be negative");
+            }
+            params.power_switch_check = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"--simple-io"},
         "use basic IO for better compatibility in subprocesses and limited consoles",
         [](common_params & params) {

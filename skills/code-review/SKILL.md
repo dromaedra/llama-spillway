@@ -5,14 +5,13 @@ description: Review llama.cpp changes against project conventions and common rev
 
 # Review llama.cpp changes
 
-This skill reviews changes against llama.cpp's conventions and the pitfalls that reviewers flag most often, so the contributor can fix them before a maintainer has to. It has two modes:
+This skill reviews changes against llama.cpp's conventions and usual pitfalls. It has two modes:
 
-- **Self-review (default):** review the contributor's own local changes (uncommitted work, or a branch vs `master`) as a pre-PR pass. Ask which if it's ambiguous; default to `git diff master...HEAD` plus any uncommitted changes.
-- **Read-only review of a PR/file:** if the user points at a PR number or specific files (including code they didn't write), review those and report findings.
+- **Self-review (default):** review the user's own local changes (uncommitted work, or a branch vs `master`). Ask which if it's ambiguous; default to `git diff master...HEAD` plus any uncommitted changes.
+- **Read-only review of commit/file:** if the user points at a commit number or specific files (including code they didn't write), review those and report findings.
 
-In both modes the output is **private review notes for the user to read and act on** - it is never something to post. This is a hard rule from `AGENTS.md`: an agent must NEVER write, or help write, a PR comment, a review comment, or a reply to a reviewer, by any means including `gh`. Do not offer to. If the user asks you to post the notes, refuse and point them at that rule. Present findings in the conversation only.
-
-Before starting, read `AGENTS.md` and `CONTRIBUTING.md` if not already in context - the "Coding guidelines", "Naming guidelines", and AI usage sections are the baseline this review enforces. For a diff that adds a new model architecture, also read `docs/development/HOWTO-add-model.md` and consider the dedicated `add-new-model` skill.
+In both modes the output is **private review notes for the user to read and act on**.
+Before starting, read `AGENTS.md` and `CODING-GUIDELINES.md` if not already in context - the "Coding guidelines" and "Naming guidelines" sections are the baseline this review enforces. For a diff that adds a new model architecture, also read `docs/development/HOWTO-add-model.md` and consider the dedicated `add-new-model` skill.
 
 ## Step 0 - Scope the diff and pick the checklists
 
@@ -28,17 +27,10 @@ Always run the **Scope and quick-reject gate**, the **Security review**, and the
 
 ## Scope and quick-reject gate (always)
 
-These are the patterns that get PRs closed without a full review. Check them first - a finding here is more important than any code nit, because it can mean the change shouldn't be a PR in its current form at all.
+A finding here is more important than any code nit, because it can mean the change shouldn't be in its current form at all.
 
-- Is there a prior issue/discussion for this? Features are supposed to start as an issue, not a PR (`CONTRIBUTING.md`). If this is a nontrivial feature with no linked issue, flag it and suggest opening one first.
-- Is it a duplicate of existing/in-flight work? Suggest `gh search prs` / `gh search issues` for the feature. Many closed PRs were duplicates of something already queued.
-- Is it self-contained and single-purpose? Multiple unrelated changes/optimizations bundled together get sent back to be split. Flag unrelated changes and suggest separate PRs.
-- Does it touch multiple ggml backends at once? Initial support should be CPU-only, other backends as follow-ups (`CONTRIBUTING.md`). Flag CUDA/Metal/Vulkan/etc. changes bundled into a feature's first PR.
-- Does it add a new `ggml_type` / quantization type? That carries a disproportionate maintenance burden and needs the full justification package (GGUF sample upload, perplexity vs FP16/BF16 and similar sizes, KL-divergence data, CPU perf numbers). Absent that, it will be rejected regardless of code quality.
-- Is it invasive - new subsystem, core-API reshaping, changes to shared graph/sampler code that other models don't need? Flag it and suggest a discussion with maintainers before investing further.
-- Is it niche/vendor-specific in a way that adds a maintenance burden nobody will own long-term? Flag the maintenance-ownership question.
+- Is it self-contained and single-purpose? Multiple unrelated changes/optimizations bundled together should be split. Flag unrelated changes and suggest separate tasks.
 - Is the change semantically correct, or a plausible-looking "fix" that misunderstands the code? Sanity-check the actual behavior, not just that it compiles.
-- AI-disclosure: if AI meaningfully contributed, is the PR template's disclosure section filled in? Remind the user. Never suggest writing the PR description or commit message for them.
 
 ## Security review (mandatory)
 
@@ -73,13 +65,12 @@ Run this whenever the diff adds a new component, subsystem, or piece of infrastr
 See the `add-new-model` skill and `docs/development/HOWTO-add-model.md` for the full workflow; this is the review-time subset that reviewers most often catch:
 
 - Don't branch on `model.arch` when the real dependency is a config/capability value - gate on the hparam/capability, not the architecture enum.
-- If the model is a close variant of an existing arch, is the delta justified? Prefer reusing or subclassing the existing arch/model class over duplicating it. A near-duplicate class or `src/models/<name>.cpp` will be asked to merge with its sibling.
+- If the model is a close variant of an existing arch, is the delta justified? Prefer reusing or subclassing the existing arch/model class over duplicating it.
 - New tensor names go through `tensor_mapping.py`, not ad-hoc name matching.
 - For QKV, split the *activation* with `ggml_view`, not the *weight* tensor; rely on ggml broadcasting instead of manually duplicating tensors.
 - New graph inputs are declared at the top of the graph-build function, not inline where first used.
 - Hparams that the model can't run correctly without must be mandatory (hard-error if missing), not read with a silent default fallback. Only genuinely-optional-across-configs values get a fallback accessor.
 - New/optional weight tensors (scales, etc.) must route through `build_lora_mm` and the existing helpers, matching convention - don't leave raw matmuls copied from another arch.
-- Don't hack RoPE with a custom sin/cos implementation. If `ggml_rope_ext` genuinely can't express it, that's an issue for discussion, not a PR.
 - Test the quantized-KV path (`-ctk`/`-ctv q8_0`), not just default f16 - new speculative/attention features silently break there.
 - Preserve existing explanatory comments about model-specific quirks when copying code; note the provenance ("copied from X, with Y added").
 - Remove dead code/branches left over from adapting a reference implementation.
@@ -90,33 +81,31 @@ See the `add-new-model` skill and `docs/development/HOWTO-add-model.md` for the 
 - No hardcoded warp/lane size - use `ggml_cuda_get_physical_warp_size()` (32 on CUDA, 64 on HIP/ROCm) and the portable helpers.
 - Strip leftover debug/profiling/logging code before review.
 - New or changed op? Update `docs/ops.md` and the relevant `docs/ops/*.csv` for the touched backend.
-- New op or operator change needs corresponding `test-backend-ops` cases, and (per `CONTRIBUTING.md`) consistency across at least two backends.
+- New op or operator change needs corresponding `test-backend-ops` cases, and (per `CODING-GUIDELINES.md`) consistency across at least two backends.
 - New kernels are expected to come with concrete perf data (throughput across realistic tensor shapes), not just correctness.
 - Don't have a backend mutate the cgraph as a shortcut - that's an unresolved architectural question, not something to slip in.
-- Expect this to need two maintainer approvals; that's normal for `ggml/` changes, not a sign something is wrong.
 - For CUDA: Avoid excessively templating kernels, only add this where it shows visible performance gain.
 
 ## Public API (`include/llama.h`)
 
-Public API changes carry a higher bar than internal ones (`CONTRIBUTING.md`). Review for:
+Public API changes carry a higher bar than internal ones. Review for:
 
-- Justification: why doesn't an existing mechanism (e.g. `cb_eval`, existing batch/sampler knobs) suffice? If it does, the change likely shouldn't add public surface. This is the single most common reason these PRs are rejected.
+- Justification: why doesn't an existing mechanism (e.g. `cb_eval`, existing batch/sampler knobs) suffice? If it does, the change likely shouldn't add public surface.
 - Experimental or stop-gap surface belongs in a side header (`llama-ext.h`), not in `llama.h`.
 - Keep it minimal and general: prefer one general call over several narrow convenience wrappers; make new calls forward-compatible (e.g. mixed-modality batches) rather than assuming today's shape.
 - The C API is the first-class, stable, ABI-defining surface - don't propose a parallel C++ API as a replacement. `llama-cpp.h` stays a thin convenience layer.
 - Types and naming: sized integer types (`int32_t`, `size_t` for sizes/offsets); `snake_case`; `<class>_<method>` = `<class>_<action>_<noun>`; enum values upper-case and prefixed with the enum name; `_t` suffix for opaque types. Avoid gratuitous signature/ABI changes to existing exported functions.
-- Every new API needs a working example/tool exercising it in the same PR - reviewers find real bugs by requiring it to be wired into `server`, `embedding`, `perplexity`, etc.
+- Every new API needs a working example/tool exercising - real bugs are found when wiring it into `server`, `embedding`, `perplexity`, etc.
 
 ## Server (`tools/server/`)
 
-- Is the feature within server's defined scope? Check `tools/server/README-dev.md` - out-of-scope features get declined.
+- Is the feature within server's defined scope? Check `tools/server/README-dev.md`.
 - Security: don't trust client-supplied headers (e.g. `X-Forwarded-For`) or add footguns; things like IP allowlisting belong at a reverse proxy unless there's a trusted-proxy design.
 - Wire new behavior into the existing request/response and checkpoint paths correctly; watch for resource leaks across requests.
 
 ## Multimodal (`tools/mtmd/`)
 
 - Tensor names must be prefixed by `v.`, `a.`, `mm.` or `a.mm.` (legacy naming doesn't follow this convention - this is expected, but new code should follow it).
-- Do not use explicit sin/cos for RoPE; use `ggml_rope_ext` instead, see `HOWTO-add-model.md`. If it can't express the needed behavior, that's a design discussion, not a PR.
 - New GGML ops must not be introduced in the same PR, you must push it as a separate PR.
 - In most cases, `build_vit` should be enough to build the transformer graph for vision models. Do not add a loop to build the transformer graph manually, unless you have a very good reason to do so. If you do, please explain why in the PR description.
 - If you need a dedicated preprocessor, there is a high chance that it can be a derived class from one of the existing preprocessors. Check carefully before adding a new preprocessor class.
@@ -125,17 +114,15 @@ Public API changes carry a higher bar than internal ones (`CONTRIBUTING.md`). Re
 
 ## General (always)
 
-Enforce the `AGENTS.md` / `CONTRIBUTING.md` coding and naming guidelines on every changed line - this is a distinct pass from checking that the code works, and matters just as much for review speed:
+Enforce the `AGENTS.md` / `CODING-GUIDELINES.md` coding and naming guidelines on every changed line - this is a distinct pass from checking that the code works, and matters just as much for review speed:
 
 - ASCII only in code and comments - no emdash, unicode arrows, `x`, `...` used as unicode; use `-`, `->`, `x`, `...` ASCII equivalents.
-- Comments are concise and explain non-obvious *why*, not *what*. Flag verbose comments, comments that restate the code, comments that reference the current task/PR, and comments hard-wrapped to a fixed column width.
+- Comments are concise and explain non-obvious *why*, not *what*. Flag verbose comments, comments that restate the code, comments that reference the current task/commit, and comments hard-wrapped to a fixed column width.
 - Do not force-wrap prose/comments to a fixed character count or split a sentence across lines.
 - `snake_case` names; `kebab-case` (lowercase-with-dashes) file names for C/C++, `.h` headers; Python files lowercase-with-underscores. Naming optimizes for longest common prefix (`number_small`, not `small_number`).
 - 4-space indentation, brackets on the same line, `void * ptr`, `int & a`, no trailing whitespace; match the surrounding style.
 - Reuse existing infrastructure over introducing new components; no new third-party dependencies, extra headers, or files unless clearly justified.
 - Keep it simple: a simpler change doing 90% is often preferable to a complex one doing 100%. Flag unnecessary templates/fancy STL; basic `for` loops are fine here.
-- Every added line should be something the contributor can explain and defend to a reviewer without AI help - flag anything that looks copied-in without understanding.
-- `Co-authored-by:` must be reserved for human co-authors; AI contributions (claude, cursor, codex, etc.) must use `Assisted-by:`; if this point is violated, it's a blocking finding.
 - Any mentions of Minja must be treated as blocking; see `AGENTS.md` for why.
 
 ## Reporting
@@ -146,4 +133,4 @@ Group findings by severity so the user knows what actually blocks a merge:
 2. **Will slow the review** - convention/naming/comment violations, missing tests/docs/perf data, missing API justification or example.
 3. **Nits** - minor style, optional cleanups.
 
-For each finding, point to the file and line and say concretely what to change and why. Do not rewrite the whole diff unprompted; let the contributor make the fixes so they own and understand them. And do not draft any PR text, commit message, or reviewer reply - that is the contributor's to write.
+For each finding, point to the file and line and say concretely what to change and why. Do not rewrite the whole diff unprompted; let the user understand the fixes.

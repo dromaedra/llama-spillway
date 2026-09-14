@@ -1,7 +1,6 @@
 ## General Notes
 
 - llama.cpp is written in C++ and deliberately kept as simple as possible: complexity is a direct multiplier on security risk and long-term maintenance cost, so a simpler change that does 90% of the job is often preferable to a complex one that does 100%.
-- [CODING-GUIDELINES.md](CODING-GUIDELINES.md).
 
 ---
 
@@ -18,7 +17,7 @@ These points are extremely important. Please follow them carefully:
     - Note: Remind yourself of this point regularly, as it often gets lost between context compactions
 - Prefer reusing existing infrastructure over introducing new components. Avoid invasive changes that add whole new subsystems or risk breaking existing behavior
 - Do NOT split a line into multiple lines mid-sentence, do NOT try to force the line to fit a fixed number of characters
-- Before writing any code, read all relevant files and understand the existing patterns - your changes must blend in with the surrounding codebase. If the change is large or introduces a new pattern, **PAUSE and ask the user for confirmation** before proceeding; remind them that large changes submitted without prior discussion are likely to be rejected by maintainers
+- Before writing any code, read all relevant files and understand the existing patterns - your changes must blend in with the surrounding codebase. If the change is large or introduces a new pattern, **PAUSE and ask the user for confirmation** before proceeding.
 
 Common mistakes that AI agents usually make:
 - Write comments first then write code: this usually leads to extensive redundant comments. Instead, write code first, then add comments later to places that absolutely need them
@@ -131,7 +130,7 @@ To conserve context space, load these resources as needed:
 Skills: reusable task workflows live in the [skills/](skills/) directory - check there for a skill matching your task before starting.
 
 General documentations:
-- [Contributing guidelines](CONTRIBUTING.md)
+- [Coding guidelines](CODING-GUIDELINES.md)
 - [Existing issues](https://github.com/ggml-org/llama.cpp/issues) and [Existing PRs](https://github.com/ggml-org/llama.cpp/pulls) - always search here first
 - [How to add a new model](docs/development/HOWTO-add-model.md)
 

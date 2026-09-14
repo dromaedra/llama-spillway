@@ -1,8 +1,6 @@
 # llama-server Development Documentation
 
-This document provides an in-depth technical overview of `llama-server`, intended for maintainers and contributors.
-
-If you are an end user consuming `llama-server` as a product, please refer to the main [README](./README.md) instead.
+This document provides an in-depth technical overview of `llama-server`.
 
 ## Scope of features
 
@@ -25,14 +23,14 @@ Note: For security reasons, features that require reading or writing external fi
 
 Out-of-scope features:
 
+Treat these as suggestions, not hard limits.
+
 - Backend:
-    - Features that require a loop of external API calls, e.g. server-side agentic loop. This is because external API calls in C++ are costly to maintain. Any complex third-party logic should be implemented outside of server code.
+    - Features that require a loop of external API calls, e.g. server-side agentic loop. This is because external API calls in C++ are costly to maintain. Any complex third-party logic should be implemented outside of server code whenever possible.
     - Features that expose the internal state of the model to the API, example: getting the intermediate activation from API. This is because llama.cpp doesn't support a stable API for doing this, and relying on `eval_callback` can make it complicated to maintain as this API is not intended to be used in multi-sequence setup.
     - Model-specific features. All API calls and features must remain model-agnostic.
 - Frontend:
     - Third-party plugins, it is costly to maintain a public plugin API for such features. Instead, users can make their own MCP server for their needs.
-    - Customizable themes, it is also costly to maintain. While we do focus on the aesthetic, we try to achieve this by perfecting a small set of themes.
-    - Browser-specific features, example: [Chrome's built-in AI API](https://developer.chrome.com/docs/ai/built-in-apis).
 
 ## Backend
 

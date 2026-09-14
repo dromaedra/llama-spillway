@@ -1887,15 +1887,23 @@ void llama_model_base::init_moe_expert_cache() {
         return;
     }
 
-    ggml_backend_dev_t dev = nullptr;
+    ggml_backend_dev_t dev_fallback = nullptr;
     for (const auto & d : devices) {
-        if (!d.is_meta) { dev = d.dev; break; }
+        if (!d.is_meta) { dev_fallback = d.dev; break; }
     }
-    if (dev == nullptr || ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU) {
+    if (dev_fallback == nullptr || ggml_backend_dev_type(dev_fallback) != GGML_BACKEND_DEVICE_TYPE_GPU) {
         LLAMA_LOG_WARN("%s: no GPU device - expert cache disabled\n", __func__);
         return;
     }
-    ggml_backend_buffer_type_t buft = ggml_backend_dev_buffer_type(dev);
+
+    // put each pack on the GPU of its layer (follows -ts), so the hot chain does not cross devices
+    // layers on CPU use the first GPU
+    auto pack_buft = [&](int il) {
+        ggml_backend_dev_t dev = pimpl->dev_layer.at(il).dev;
+        const bool on_gpu = ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU &&
+            std::any_of(devices.begin(), devices.end(), [dev](const llama_device & d) { return d.dev == dev && !d.is_meta; });
+        return ggml_backend_dev_buffer_type(on_gpu ? dev : dev_fallback);
+    };
 
     // candidate layers: routed experts resident in host memory
     std::vector<int> pack_layers;
@@ -1911,14 +1919,21 @@ void llama_model_base::init_moe_expert_cache() {
         return;
     }
 
-    ggml_init_params ctx_params = {
-        /*.mem_size   =*/ (5*pack_layers.size() + 1)*ggml_tensor_overhead(),
-        /*.mem_buffer =*/ nullptr,
-        /*.no_alloc   =*/ true,
-    };
-    ggml_context * ctx = ggml_init(ctx_params);
+    std::map<ggml_backend_buffer_type_t, ggml_context *, llama_model_loader::ggml_backend_buft_comparator> ctx_map;
 
     for (int il : pack_layers) {
+        ggml_backend_buffer_type_t buft = pack_buft(il);
+        auto it = ctx_map.find(buft);
+        if (it == ctx_map.end()) {
+            ggml_init_params ctx_params = {
+                /*.mem_size   =*/ (5*pack_layers.size() + 1)*ggml_tensor_overhead(),
+                /*.mem_buffer =*/ nullptr,
+                /*.no_alloc   =*/ true,
+            };
+            it = ctx_map.emplace(buft, ggml_init(ctx_params)).first;
+        }
+        ggml_context * ctx = it->second;
+
         auto & l = layers[il];
         const ggml_tensor * g = l.ffn_gate_exps;
         const ggml_tensor * u = l.ffn_up_exps;
@@ -1937,26 +1952,41 @@ void llama_model_base::init_moe_expert_cache() {
         ggml_format_name(l.moe_map_cold, "blk.%d.moe_map_cold", il);
     }
 
-    ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
-    if (buf == nullptr) {
-        LLAMA_LOG_WARN("%s: pack allocation failed - expert cache disabled\n", __func__);
-        ggml_free(ctx);
-        for (int il : pack_layers) {
-            auto & l = layers[il];
-            l.ffn_gate_exps_hot = l.ffn_up_exps_hot = l.ffn_down_exps_hot = nullptr;
-            l.moe_map_hot = l.moe_map_cold = nullptr;
+    // all-or-nothing: if one device cannot fit its packs, disable the cache on all devices
+    std::vector<ggml_backend_buffer_ptr> bufs;
+    for (auto & [buft, ctx] : ctx_map) {
+        ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
+        if (buf == nullptr) {
+            LLAMA_LOG_WARN("%s: pack allocation of %.2f MiB on %s failed - expert cache disabled\n", __func__,
+                ggml_backend_alloc_ctx_tensors_from_buft_size(ctx, buft)/1024.0/1024.0, ggml_backend_buft_name(buft));
+            bufs.clear();
+            for (auto & [_, c] : ctx_map) {
+                ggml_free(c);
+            }
+            for (int il : pack_layers) {
+                auto & l = layers[il];
+                l.ffn_gate_exps_hot = l.ffn_up_exps_hot = l.ffn_down_exps_hot = nullptr;
+                l.moe_map_hot = l.moe_map_cold = nullptr;
+            }
+            return;
         }
-        return;
+        // weights usage pins the pack tensors to their backend during graph
+        // assignment - without it a CPU-assigned consumer can drag the hot
+        // matmuls (and a per-layer weight copy) onto the CPU
+        ggml_backend_buffer_set_usage(buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+        bufs.emplace_back(buf);
     }
-    // weights usage pins the pack tensors to their backend during graph
-    // assignment - without it a CPU-assigned consumer can drag the hot
-    // matmuls (and a per-layer weight copy) onto the CPU
-    ggml_backend_buffer_set_usage(buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+
+    size_t i_buf = 0;
+    for (auto & [_, ctx] : ctx_map) {
+        pimpl->ctxs_bufs.emplace_back(ggml_context_ptr{ctx}, std::vector<ggml_backend_buffer_ptr>{});
+        pimpl->ctxs_bufs.back().second.push_back(std::move(bufs[i_buf++]));
+    }
 
     // fill packs (expert dim is outermost: one contiguous slab per expert)
     std::vector<uint8_t> slab;
     std::vector<int32_t> map_hot, map_cold;
-    size_t total_bytes = 0;
+    std::map<ggml_backend_buffer_type_t, std::pair<size_t, size_t>, llama_model_loader::ggml_backend_buft_comparator> stats; // buft -> (layers, bytes)
     for (int il : pack_layers) {
         auto & l = layers[il];
         const int64_t n_expert = l.ffn_gate_exps->ne[2];
@@ -1986,18 +2016,18 @@ void llama_model_base::init_moe_expert_cache() {
                 slab.resize(nb);
                 ggml_backend_tensor_get(srcs[t], slab.data(), e*nb, nb);
                 ggml_backend_tensor_set(dsts[t], slab.data(), s*nb, nb);
-                total_bytes += nb;
+                stats[ggml_backend_buffer_get_type(dsts[t]->buffer)].second += nb;
             }
         }
+        stats[ggml_backend_buffer_get_type(l.ffn_gate_exps_hot->buffer)].first++;
         ggml_backend_tensor_set(l.moe_map_hot,  map_hot.data(),  0, n_expert*sizeof(int32_t));
         ggml_backend_tensor_set(l.moe_map_cold, map_cold.data(), 0, n_expert*sizeof(int32_t));
     }
 
-    pimpl->ctxs_bufs.emplace_back(ggml_context_ptr{ctx}, std::vector<ggml_backend_buffer_ptr>{});
-    pimpl->ctxs_bufs.back().second.emplace_back(buf);
-
-    LLAMA_LOG_INFO("%s: expert cache: %zu layers x %d slots, %.2f MiB uploaded to %s\n",
-        __func__, pack_layers.size(), n_slots, total_bytes/1024.0/1024.0, ggml_backend_buft_name(buft));
+    for (const auto & [buft, st] : stats) {
+        LLAMA_LOG_INFO("%s: expert cache: %zu layers x %d slots, %.2f MiB uploaded to %s\n",
+            __func__, st.first, n_slots, st.second/1024.0/1024.0, ggml_backend_buft_name(buft));
+    }
 }
 
 ggml_tensor * llama_model_base::create_tensor(llama_model_loader & ml, const LLM_TN_IMPL & tn, const std::initializer_list<int64_t> & ne, int flags) {

@@ -8,7 +8,7 @@ Read before writing or building code. Agent rules: AGENTS.md.
 - Rebuild only what changed: `cmake --build build --target llama-server`. After a change to common/*.h also run the full `cmake --build build` (other tools would load a mismatched libllama-common.so; ~20 s, no CUDA recompiles).
 - Before a rebuild replaces a working build/bin: copy it to a backup folder (pre-<feature>-<commit>/, with a README.md).
 - No builds or GPU work while a benchmark runs.
-- First checks on CPU with a small model (`-ngl 0`, on a port no running server uses), so the GPUs stay free.
+- First checks on CPU with a small model (`-ngl 0`, on a port no running server uses), so the GPUs stay free. Default: Qwen3.5-4B (3.5 GB; same tokenizer, chat template and hybrid SSM / attention layout as Flash-Next, but dense, so MoE and expert-cache paths need a real model).
 - Then validate on the real model (load-log buffer math, fresh prompt and continuation, read the output). Speed claims need a session-level A/B comparison; a single llama-bench or llama-perplexity number is not evidence on this machine.
 - ggml changes: run `test-backend-ops` (CPU vs CUDA); a new or changed operator gets test cases there.
 - Format only the lines you changed: `git clang-format` (repo .clang-format). clangd is available for navigation.

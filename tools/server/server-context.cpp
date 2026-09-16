@@ -907,6 +907,9 @@ private:
     // slots / clients
     std::vector<server_slot> slots;
 
+    // set by apply_cache_text_match for the task that is being scheduled
+    bool text_match_applied = false;
+
     int trace = 0;        // env: LLAMA_TRACE
     int slots_debug = 0;  // env: LLAMA_SERVER_SLOTS_DEBUG
     int slots_n_diff = 0; // env: LLAMA_SERVER_SLOTS_N_DIFF
@@ -1655,6 +1658,11 @@ private:
 
                 const int64_t t_start = ggml_time_us();
 
+                if (text_match_applied) {
+                    // the reused ids were taken from the slot contents that are about to be replaced
+                    SRV_WRN("%s", "prompt cache update after a cache text match\n");
+                }
+
                 ret->prompt_save(*prompt_cache);
 
                 if (!ret->prompt_load(*prompt_cache, task.tokens)) {
@@ -2370,6 +2378,117 @@ private:
                 cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
     }
 
+    // the model can sample a token split that the tokenizer does not reproduce (' Item' + 'Stack'
+    // generated, ' ItemStack' when the same text comes back), which ends the id match and makes
+    // recurrent models replay the whole previous generation. keep the cached ids for the part of
+    // the prompt whose text is the same. ref: https://github.com/ggml-org/llama.cpp/issues/11970
+    void apply_cache_text_match(server_task & task) {
+        text_match_applied = false;
+
+        if (!params_base.cache_text_match) {
+            return;
+        }
+
+        if (task.type != SERVER_TASK_TYPE_COMPLETION || !task.params.cache_prompt || task.tokens_client_ids) {
+            return;
+        }
+
+        if (slots.size() != 1) {
+            return; // v1 handles one slot only
+        }
+
+        const server_slot & slot = slots[0];
+
+        if (slot.is_processing() || slot.prompt.tokens.empty() || task.tokens.empty()) {
+            return;
+        }
+
+        if (slot.prompt.tokens.has_mtmd || task.tokens.has_mtmd) {
+            return;
+        }
+
+        const size_t n_cache = slot.prompt.tokens.size();
+
+        if (task.tokens.get_common_prefix(slot.prompt.tokens) == n_cache) {
+            return; // the ids already cover the cache, nothing to gain
+        }
+
+        const std::string cached_text = slot.prompt.tokens.detokenize(ctx_tgt, true);
+        const std::string new_text    = task.tokens.detokenize(ctx_tgt, true);
+
+        size_t n_common = 0;
+        while (n_common < cached_text.size() && n_common < new_text.size() && cached_text[n_common] == new_text[n_common]) {
+            n_common++;
+        }
+
+        if (n_common == 0) {
+            return;
+        }
+
+        const llama_tokens & cached_ids = slot.prompt.tokens.get_tokens();
+
+        size_t n_keep  = 0;
+        size_t n_bytes = 0;
+        while (n_keep < n_cache) {
+            const llama_token id = cached_ids[n_keep];
+            if (id == LLAMA_TOKEN_NULL) {
+                break;
+            }
+
+            const size_t n_piece = common_token_to_piece(ctx_tgt, id, true).size();
+            if (n_bytes + n_piece > n_common) {
+                break;
+            }
+
+            n_bytes += n_piece;
+            n_keep++;
+        }
+
+        // the pieces above are not what the detokenizer produces for every vocab (it can strip the
+        // first space and clean spaces before punctuation), so let the decoder settle the seam
+        llama_tokens kept;
+        size_t offset = 0;
+        for (int attempt = 0; attempt < 4 && n_keep > 0; attempt++) {
+            kept.assign(cached_ids.begin(), cached_ids.begin() + n_keep);
+
+            const std::string kept_text = common_detokenize(ctx_tgt, kept, true);
+
+            const bool is_prefix   = kept_text.size() <= new_text.size() && new_text.compare(0, kept_text.size(), kept_text) == 0;
+            const bool is_utf8     = validate_utf8(kept_text) == kept_text.size();
+            const bool has_content = !common_token_to_piece(ctx_tgt, kept.back(), true).empty();
+
+            if (is_prefix && is_utf8 && has_content) {
+                offset = kept_text.size();
+                break;
+            }
+
+            n_keep--;
+        }
+
+        if (n_keep == 0 || offset == 0) {
+            SRV_DBG("%s", "cache text match: no usable seam, keeping the canonical tokens\n");
+            return;
+        }
+
+        llama_tokens out = kept;
+        const llama_tokens suffix = common_tokenize(ctx_tgt, new_text.substr(offset), false, true);
+        out.insert(out.end(), suffix.begin(), suffix.end());
+
+        server_tokens rewritten(out, false);
+
+        if (rewritten.detokenize(ctx_tgt, true) != new_text || !rewritten.validate(ctx_tgt)) {
+            SRV_WRN("cache text match: assembled prompt does not decode to the request, keeping the canonical tokens (n_keep = %zu)\n", n_keep);
+            return;
+        }
+
+        SRV_INF("cache text match: reusing %zu of %zu cached tokens (%zu bytes), prompt %d -> %d tokens\n",
+                n_keep, n_cache, offset, (int) task.tokens.size(), (int) rewritten.size());
+
+        task.tokens = std::move(rewritten);
+
+        text_match_applied = true;
+    }
+
     // returns false to decline the task, it is offered again after the decode is done
     bool process_single_task(server_task && task, bool is_yielding) {
         // while yielding, an encode / decode is running and only reading the server state is safe
@@ -2393,6 +2512,8 @@ private:
                     }
 
                     const int id_task = task.id;
+
+                    apply_cache_text_match(task);
 
                     server_slot * slot = get_available_slot(task);
 
@@ -4315,6 +4436,15 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
             task.id = rd.get_new_id();
 
             task.tokens = std::move(inputs[i]);
+
+            {
+                // same split as tokenize_input_prompts: one prompt, or one per array element
+                const bool is_multi = prompt.is_array() && !json_is_array_and_contains_numbers(prompt);
+                const json & sub    = is_multi ? prompt.at(i) : prompt;
+
+                task.tokens_client_ids = json_is_array_of_numbers(sub) || json_is_array_of_mixed_numbers_strings(sub);
+            }
+
             task.params = server_schema::eval_llama_cmpl_schema(
                     ctx_server.vocab,
                     params,

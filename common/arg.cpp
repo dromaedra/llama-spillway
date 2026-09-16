@@ -3651,6 +3651,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_ENDPOINT_SLOTS"));
     add_opt(common_arg(
+        {"--cache-text-match"},
+        string_format("keep the cached token ids for the part of the prompt whose text matches the slot cache, so a sampled token split does not invalidate it (default: %s)", params.cache_text_match ? "enabled" : "disabled"),
+        [](common_params & params) {
+            params.cache_text_match = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CACHE_TEXT_MATCH"));
+    add_opt(common_arg(
         {"--slot-save-path"}, "PATH",
         "path to save slot kv cache (default: disabled)",
         [](common_params & params, const std::string & value) {

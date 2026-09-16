@@ -681,6 +681,9 @@ struct common_params {
     bool endpoint_props   = false; // only control POST requests, not GET
     bool endpoint_metrics = false;
 
+    // reuse the cached token ids for the part of the prompt whose text matches the slot cache
+    bool cache_text_match = false;
+
     // enable built-in tools
     std::vector<std::string> server_tools;
     std::string server_tools_runtime;

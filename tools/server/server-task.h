@@ -153,6 +153,9 @@ struct server_task {
     task_params   params;
     server_tokens tokens;
 
+    // the request sent token ids, so they must be used as they are
+    bool tokens_client_ids = false;
+
     // only used by CLI, this allow tokenizing CLI inputs on server side
     // we need this because mtmd_context and vocab are not accessible outside of server_context
     bool                    cli = false;

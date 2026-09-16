@@ -2389,7 +2389,8 @@ private:
             return;
         }
 
-        if (task.type != SERVER_TASK_TYPE_COMPLETION || !task.params.cache_prompt || task.tokens_client_ids) {
+        // child tasks copied the tokens before this point
+        if (task.type != SERVER_TASK_TYPE_COMPLETION || !task.params.cache_prompt || task.tokens_client_ids || task.is_parent()) {
             return;
         }
 
@@ -2408,10 +2409,13 @@ private:
         }
 
         const size_t n_cache = slot.prompt.tokens.size();
+        const size_t n_lcp   = task.tokens.get_common_prefix(slot.prompt.tokens);
 
-        if (task.tokens.get_common_prefix(slot.prompt.tokens) == n_cache) {
+        if (n_lcp == n_cache) {
             return; // the ids already cover the cache, nothing to gain
         }
+
+        const int64_t t_start = ggml_time_us();
 
         const std::string cached_text = slot.prompt.tokens.detokenize(ctx_tgt, true);
         const std::string new_text    = task.tokens.detokenize(ctx_tgt, true);
@@ -2466,23 +2470,47 @@ private:
         }
 
         if (n_keep == 0 || offset == 0) {
-            SRV_DBG("%s", "cache text match: no usable seam, keeping the canonical tokens\n");
+            SRV_TRC("cache text match: no usable seam, keeping the canonical tokens (%.2f ms)\n", (ggml_time_us() - t_start) / 1000.0);
             return;
         }
 
+        if (n_keep <= n_lcp) {
+            SRV_TRC("cache text match: the canonical ids already match as far, keeping them (n_keep = %zu, %.2f ms)\n", n_keep, (ggml_time_us() - t_start) / 1000.0);
+            return;
+        }
+
+        const llama_tokens & old_ids = task.tokens.get_tokens();
+        const llama_tokens   suffix  = common_tokenize(ctx_tgt, new_text.substr(offset), false, true);
+
+        // every id must come from the cache or from the canonical tokens, so the seam must not create a new split
+        const bool tail_canonical = suffix.size() <= old_ids.size() && std::equal(suffix.begin(), suffix.end(), old_ids.end() - suffix.size());
+        if (!tail_canonical) {
+            SRV_TRC("cache text match: the seam is not a canonical token boundary, keeping the canonical tokens (n_keep = %zu, %.2f ms)\n", n_keep, (ggml_time_us() - t_start) / 1000.0);
+            return;
+        }
+
+        // canonical tokens before the tail
+        const size_t n_head = old_ids.size() - suffix.size();
+
         llama_tokens out = kept;
-        const llama_tokens suffix = common_tokenize(ctx_tgt, new_text.substr(offset), false, true);
         out.insert(out.end(), suffix.begin(), suffix.end());
 
         server_tokens rewritten(out, false);
 
         if (rewritten.detokenize(ctx_tgt, true) != new_text || !rewritten.validate(ctx_tgt)) {
-            SRV_WRN("cache text match: assembled prompt does not decode to the request, keeping the canonical tokens (n_keep = %zu)\n", n_keep);
+            SRV_WRN("cache text match: assembled prompt does not decode to the request, keeping the canonical tokens (n_keep = %zu, %.2f ms)\n", n_keep, (ggml_time_us() - t_start) / 1000.0);
             return;
         }
 
-        SRV_INF("cache text match: reusing %zu of %zu cached tokens (%zu bytes), prompt %d -> %d tokens\n",
-                n_keep, n_cache, offset, (int) task.tokens.size(), (int) rewritten.size());
+        SRV_INF("cache text match: reusing %zu of %zu cached tokens (%zu bytes), prompt %d -> %d tokens (%.2f ms)\n",
+                n_keep, n_cache, offset, (int) old_ids.size(), (int) rewritten.size(), (ggml_time_us() - t_start) / 1000.0);
+
+        // the message positions were found on the canonical tokens, the tail moves by the length difference of the head
+        for (auto & span : task.params.message_spans.spans) {
+            if (span.pos >= n_head) {
+                span.pos = span.pos - n_head + n_keep;
+            }
+        }
 
         task.tokens = std::move(rewritten);
 

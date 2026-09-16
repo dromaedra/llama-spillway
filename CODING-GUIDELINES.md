@@ -1,123 +1,44 @@
-### General Notes
+# Coding guidelines (local fork)
 
-- llama.cpp uses the ggml tensor library for model evaluation. If you are unfamiliar with ggml, consider taking a look at the [examples in the ggml repository](https://github.com/ggml-org/ggml/tree/master/examples/). [simple](https://github.com/ggml-org/ggml/tree/master/examples/simple) shows the bare minimum for using ggml. [gpt-2](https://github.com/ggml-org/ggml/tree/master/examples/gpt-2) has minimal implementations for language model inference using GPT-2. [mnist](https://github.com/ggml-org/ggml/tree/master/examples/mnist) demonstrates how to train and evaluate a simple image classifier
-- Test your changes:
-  - Execute [the full CI locally on your machine](ci/README.md) before publishing
-  - Verify that the perplexity and the performance are not affected negatively by your changes (use `llama-perplexity` and `llama-bench`)
-  - If you modified the `ggml` source, run the `test-backend-ops` tool to check whether different backend implementations of the `ggml` operators produce consistent results (this requires access to at least two different `ggml` backends)
-  - If you modified a `ggml` operator or added a new one, add the corresponding test cases to `test-backend-ops`
+Read before writing or building code. Agent rules: AGENTS.md.
 
-# Coding guidelines
+## Build and test
 
-- Avoid adding third-party dependencies, extra files, extra headers, etc.
-- Avoid fancy-looking modern STL constructs, use basic `for` loops, avoid templates, keep it simple
-- Vertical alignment makes things more readable and easier to batch edit
-- Clean-up any trailing whitespaces, use 4 spaces for indentation, brackets on the same line, `void * ptr`, `int & a`
-- Use sized integer types such as `int32_t` in the public API, e.g. `size_t` may also be appropriate for allocation sizes or byte offsets
-- Declare structs with `struct foo {}` instead of `typedef struct foo {} foo`
-    - In C++ code omit optional `struct` and `enum` keyword whenever they are not necessary
-    ```cpp
-    // OK
-    llama_context * ctx;
-    const llama_rope_type rope_type;
+- build/: Release, CUDA, BUILD_SHARED_LIBS=ON. Always CMAKE_CUDA_ARCHITECTURES=75;89 (RTX 2070 SUPER + RTX 4070).
+- Rebuild only what changed: `cmake --build build --target llama-server`. After a change to common/*.h also run the full `cmake --build build` (other tools would load a mismatched libllama-common.so; ~20 s, no CUDA recompiles).
+- Before a rebuild replaces a working build/bin: copy it to a backup folder (pre-<feature>-<commit>/, with a README.md).
+- No builds or GPU work while a benchmark runs.
+- First checks on CPU with a small model (`-ngl 0`, on a port no running server uses), so the GPUs stay free.
+- Then validate on the real model (load-log buffer math, fresh prompt and continuation, read the output). Speed claims need a session-level A/B comparison; a single llama-bench or llama-perplexity number is not evidence on this machine.
+- ggml changes: run `test-backend-ops` (CPU vs CUDA); a new or changed operator gets test cases there.
+- Format only the lines you changed: `git clang-format` (repo .clang-format). clangd is available for navigation.
 
-    // not OK
-    struct llama_context * ctx;
-    const enum llama_rope_type rope_type;
-    ```
+## C++ style
 
-    _(NOTE: this guideline is yet to be applied to the `llama.cpp` codebase. New code should follow this guideline.)_
+- No new dependencies. New files or headers only with the user's approval.
+- Simple C++: basic `for` loops, no fancy modern STL constructs, no templates.
+- 4 spaces, brackets on the same line, `void * ptr`, `int & a`, no trailing whitespace. Vertical alignment where it helps reading and batch edits.
+- Sized integer types (`int32_t`) in the public API; `size_t` for allocation sizes and byte offsets.
+- `struct foo {}`, not `typedef struct foo {} foo`. In C++ omit optional `struct` / `enum` keywords: `llama_context * ctx;`, `const llama_rope_type rope_type;`.
+- Follow the surrounding code; for anything not covered, the C++ Core Guidelines.
+- Close preprocessor blocks with a comment: `#endif // FOO`.
+- New code follows these rules (legacy code may not yet). Exceptions are allowed in isolated backend-specific code that does not interface with ggml.
+- If you had to read the source to learn how to use an API, add a short summary to its header. Fix incorrect or outdated docs you notice.
 
-- Try to follow the existing patterns in the code (indentation, spaces, etc.). In case of doubt use `clang-format` (from clang-tools v15+) to format the added code
-- For anything not covered in the current guidelines, refer to the [C++ Core Guidelines](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines)
-- Tensors store data in row-major order. We refer to dimension 0 as columns, 1 as rows, 2 as matrices
-- Matrix multiplication is unconventional: [`C = ggml_mul_mat(ctx, A, B)`](https://github.com/ggml-org/llama.cpp/blob/880e352277fc017df4d5794f0c21c44e1eae2b84/ggml.h#L1058-L1064) means $C^T = A B^T \Leftrightarrow C = B A^T.$
+## Naming
 
-![matmul](media/matmul.png)
+- `snake_case` for functions, variables and types. Longest common prefix first: `number_small`, `number_big`, not `small_number`.
+- Enum values upper case, prefixed with the enum name: `LLAMA_VOCAB_TYPE_BPE`.
+- Functions are `<class>_<method>`, with `<method>` = `<action>_<noun>`: `llama_model_init`, `llama_sampler_chain_remove`, `llama_sampler_get_seed`, `llama_adapter_lora_free`. `get` and the noun can be omitted; the `_context` suffix of the class is optional, used to disambiguate (`llama_set_embeddings`, `llama_n_threads` belong to `llama_context`); `init` / `free` for constructor / destructor.
+- `_t` suffix for types opaque to the user: `typedef struct llama_context * llama_context_t;`.
+- C/C++ files lowercase with dashes (`.h`, `.c`, `.cpp`); Python files lowercase with underscores.
 
-# Naming guidelines
+## ggml
 
-- Use `snake_case` for function, variable and type names
-- Naming usually optimizes for longest common prefix (see https://github.com/ggml-org/ggml/pull/302#discussion_r1243240963)
+- Tensors are row-major: dimension 0 = columns, 1 = rows, 2 = matrices.
+- `C = ggml_mul_mat(ctx, A, B)` means C^T = A B^T, i.e. C = B A^T (media/matmul.png).
+- Intro examples: https://github.com/ggml-org/ggml/tree/master/examples (simple, gpt-2, mnist).
 
-    ```cpp
-    // not OK
-    int small_number;
-    int big_number;
+## Server
 
-    // OK
-    int number_small;
-    int number_big;
-    ```
-
-- Enum values are always in upper case and prefixed with the enum name
-
-    ```cpp
-    enum llama_vocab_type {
-        LLAMA_VOCAB_TYPE_NONE = 0,
-        LLAMA_VOCAB_TYPE_SPM  = 1,
-        LLAMA_VOCAB_TYPE_BPE  = 2,
-        LLAMA_VOCAB_TYPE_WPM  = 3,
-        LLAMA_VOCAB_TYPE_UGM  = 4,
-        LLAMA_VOCAB_TYPE_RWKV = 5,
-    };
-    ```
-
-- The general naming pattern is `<class>_<method>`, with `<method>` being `<action>_<noun>`
-
-    ```cpp
-    llama_model_init();           // class: "llama_model",         method: "init"
-    llama_sampler_chain_remove(); // class: "llama_sampler_chain", method: "remove"
-    llama_sampler_get_seed();     // class: "llama_sampler",       method: "get_seed"
-    llama_set_embeddings();       // class: "llama_context",       method: "set_embeddings"
-    llama_n_threads();            // class: "llama_context",       method: "n_threads"
-    llama_adapter_lora_free();    // class: "llama_adapter_lora",  method: "free"
-    ```
-
-    - The `get` `<action>` can be omitted
-    - The `<noun>` can be omitted if not necessary
-    - The `_context` suffix of the `<class>` is optional. Use it to disambiguate symbols when needed
-    - Use `init`/`free` for constructor/destructor `<action>`
-
-- Use the `_t` suffix when a type is supposed to be opaque to the user - it's not relevant to them if it is a struct or anything else
-
-    ```cpp
-    typedef struct llama_context * llama_context_t;
-
-    enum llama_pooling_type llama_pooling_type(const llama_context_t ctx);
-    ```
-
-    _(NOTE: this guideline is yet to be applied to the `llama.cpp` codebase. New code should follow this guideline)_
-
-- C/C++ filenames are all lowercase with dashes. Headers use the `.h` extension. Source files use the `.c` or `.cpp` extension
-- Python filenames are all lowercase with underscores
-
-- _(TODO: abbreviations usage)_
-
-# Preprocessor directives
-
-- _(TODO: add guidelines with examples and apply them to the codebase)_
-
-    ```cpp
-    #ifdef FOO
-    #endif // FOO
-    ```
-
-# Code maintenance
-
-- New code should follow the guidelines (coding, naming, etc.) outlined in this document. Exceptions are allowed in isolated, backend-specific parts of the code that do not interface directly with the `ggml` interfaces.
-  _(NOTE: for legacy reasons, existing code is not required to follow this guideline)_
-
-- For changes in server, please make sure to refer to the [server development documentation](./tools/server/README-dev.md)
-
-# Documentation
-
-- Documentation is a community effort
-- When you need to look into the source code to figure out how to use an API consider adding a short summary to the header file for future reference
-- When you notice incorrect or outdated documentation, please update it
-
-# Resources
-
-The Github issues, PRs and discussions contain a lot of information that can be useful to get familiar with the codebase. For convenience, some of the more important information is referenced from Github projects:
-
-https://github.com/ggml-org/llama.cpp/projects
+- Read tools/server/README-dev.md (architecture) before server changes.

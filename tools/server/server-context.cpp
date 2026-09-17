@@ -2502,8 +2502,8 @@ private:
             return;
         }
 
-        SRV_INF("cache text match: reusing %zu of %zu cached tokens (%zu bytes), prompt %d -> %d tokens (%.2f ms)\n",
-                n_keep, n_cache, offset, (int) old_ids.size(), (int) rewritten.size(), (ggml_time_us() - t_start) / 1000.0);
+        SRV_INF("cache text match: reusing %zu of %zu cached tokens (%zu bytes), prompt %d -> %d tokens (%.2f ms), canonical match %zu\n",
+                n_keep, n_cache, offset, (int) old_ids.size(), (int) rewritten.size(), (ggml_time_us() - t_start) / 1000.0, n_lcp);
 
         // the message positions were found on the canonical tokens, the tail moves by the length difference of the head
         for (auto & span : task.params.message_spans.spans) {

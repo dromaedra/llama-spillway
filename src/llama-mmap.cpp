@@ -496,9 +496,16 @@ struct llama_mmap::impl {
             }
         };
 
+        // mmap read-around stops for the whole file once f_ra.mmap_miss passes its limit, and a cold expert
+        // walk never gets the page-cache hits back to lower it. MADV_SEQUENTIAL skips that check.
+        const bool seq_advice = getenv("LLAMA_MMAP_SEQ") != nullptr;
+
         if (prefetch > 0) {
             for (const auto & range : ranges_complement(lazy_ranges, std::min(file->size(), prefetch))) {
                 advise(range.first, range.second, POSIX_MADV_WILLNEED, "POSIX_MADV_WILLNEED");
+                if (seq_advice) {
+                    advise(range.first, range.second, POSIX_MADV_SEQUENTIAL, "POSIX_MADV_SEQUENTIAL");
+                }
             }
         }
         for (const auto & range : lazy_ranges) {

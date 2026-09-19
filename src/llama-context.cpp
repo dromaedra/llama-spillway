@@ -1644,6 +1644,38 @@ static bool needs_raw_logits(const llama_ubatch & ubatch, const std::map<llama_s
     return false; // all sequences use backend sampling
 }
 
+// LLAMA_MMAP_SEQ=auto arms mmap read-around per batch instead of for the whole run.
+static bool seq_advice_auto() {
+    static const bool v = []() {
+        const char * s = getenv("LLAMA_MMAP_SEQ");
+        return s && strcmp(s, "auto") == 0;
+    }();
+    return v;
+}
+
+// a batch is worth the advice when it reads most of the experts: tokens x experts per token against the pack.
+// LLAMA_MMAP_SEQ_MIN_TOKENS overrides the derived value, "off" never arms it.
+static uint32_t seq_advice_min_tokens(const llama_hparams & hparams) {
+    static const int64_t env = []() -> int64_t {
+        const char * s = getenv("LLAMA_MMAP_SEQ_MIN_TOKENS");
+        if (!s) {
+            return -1;
+        }
+        return strcmp(s, "off") == 0 ? -2 : atoll(s);
+    }();
+    if (env == -2) {
+        return UINT32_MAX;
+    }
+    if (env >= 0) {
+        return (uint32_t) env;
+    }
+    const uint32_t n_used = hparams.n_expert_used(0);
+    if (hparams.n_expert == 0 || n_used == 0) {
+        return 1;   // dense: every weight is read for every token, so the advice always pays
+    }
+    return (2 * hparams.n_expert + n_used - 1) / n_used;
+}
+
 int llama_context::decode(const llama_batch & batch_inp) {
     // MTP hook batches carry both token (next-token id) and embd (h_nextn row),
     // so accept either present rather than requiring exactly one.
@@ -1661,6 +1693,12 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
     const auto & vocab   = model.vocab;
     const auto & hparams = model.hparams;
+
+    // mmap read-around is worth having for a batch that routes to most of the experts and is very costly for
+    // one that does not, so arm it by batch size. encode() is deliberately not hooked.
+    if (seq_advice_auto()) {
+        model.advise_sequential((uint32_t) batch_inp.n_tokens >= seq_advice_min_tokens(hparams));
+    }
 
     const int64_t n_vocab = vocab.n_tokens();
     const bool    mtp_embd = cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP && batch_inp.embd;

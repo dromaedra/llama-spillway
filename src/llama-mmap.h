@@ -55,6 +55,11 @@ struct llama_mmap {
 
     void unmap_fragment(size_t first, size_t last);
 
+    // turn mmap read-around on or off for the prefetched ranges, by marking them sequential.
+    // the kernel stops reading around a fault once f_ra.mmap_miss passes its limit and a cold expert walk
+    // never earns it back, so a large batch wants the advice and a single token is hurt badly by it.
+    void advise_sequential(bool enable) const;
+
     // pin the pages backing [first, last) with a backend allocator for faster H2D copies,
     // unpinned in the destructor before the pages are unmapped
     // returns the number of bytes registered, 0 on failure

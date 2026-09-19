@@ -2101,6 +2101,12 @@ uint64_t llama_model::n_elements() const {
     return pimpl->n_elements;
 }
 
+void llama_model::advise_sequential(bool enable) const {
+    for (const auto & mapping : pimpl->mappings) {
+        mapping->advise_sequential(enable);
+    }
+}
+
 void llama_model::print_info() const {
     const std::string rope_scaling_type = llama_rope_scaling_type_name(hparams.rope_scaling_type_train);
 

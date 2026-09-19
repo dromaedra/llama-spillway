@@ -464,6 +464,8 @@ static llama_mmap::ranges ranges_complement(llama_mmap::ranges ranges, size_t li
 struct llama_mmap::impl {
 #ifdef _POSIX_MAPPED_FILES
     std::vector<std::pair<size_t, size_t>> mapped_fragments;
+    llama_mmap::ranges advised;   // page-aligned prefetched ranges, for advise_sequential
+    bool seq_on = false;
 
     impl(struct llama_file * file, size_t prefetch, bool numa, const llama_mmap::ranges & lazy_ranges) {
         size = file->size();
@@ -498,15 +500,25 @@ struct llama_mmap::impl {
 
         // mmap read-around stops for the whole file once f_ra.mmap_miss passes its limit, and a cold expert
         // walk never gets the page-cache hits back to lower it. MADV_SEQUENTIAL skips that check.
-        const bool seq_advice = getenv("LLAMA_MMAP_SEQ") != nullptr;
+        // "auto" leaves it to advise_sequential(), which arms it only for batches large enough to use it.
+        const char * seq_env = getenv("LLAMA_MMAP_SEQ");
+        const bool seq_auto   = seq_env && strcmp(seq_env, "auto") == 0;
+        const bool seq_advice = seq_env && !seq_auto;
 
         if (prefetch > 0) {
+            const size_t page_size = sysconf(_SC_PAGESIZE);
             for (const auto & range : ranges_complement(lazy_ranges, std::min(file->size(), prefetch))) {
                 advise(range.first, range.second, POSIX_MADV_WILLNEED, "POSIX_MADV_WILLNEED");
                 if (seq_advice) {
                     advise(range.first, range.second, POSIX_MADV_SEQUENTIAL, "POSIX_MADV_SEQUENTIAL");
                 }
+                const size_t beg = range.first & ~(page_size - 1);
+                const size_t end = std::min((range.second + page_size - 1) & ~(page_size - 1), file->size());
+                if (beg < end) {
+                    advised.emplace_back(beg, end);
+                }
             }
+            seq_on = seq_advice;
         }
         for (const auto & range : lazy_ranges) {
             advise(range.first, range.second, POSIX_MADV_RANDOM, "POSIX_MADV_RANDOM");
@@ -519,6 +531,42 @@ struct llama_mmap::impl {
         }
 
         mapped_fragments.emplace_back(0, file->size());
+    }
+
+    void advise_sequential(bool enable) {
+        if (enable == seq_on || advised.empty()) {
+            return;
+        }
+        // the loader unmaps the fragments it no longer needs, and madvise fails over a hole, so advise only
+        // the parts still mapped. State is updated even on a partial failure, or a half-applied advice could
+        // never be undone.
+        const int advice = enable ? POSIX_MADV_SEQUENTIAL : POSIX_MADV_NORMAL;
+        int err = 0;
+        size_t n_applied = 0, bytes = 0;
+        for (const auto & range : advised) {
+            for (const auto & frag : mapped_fragments) {
+                const size_t beg = std::max(range.first,  frag.first);
+                const size_t end = std::min(range.second, frag.second);
+                if (beg >= end) {
+                    continue;
+                }
+                const int r = posix_madvise((char *) addr + beg, end - beg, advice);
+                if (r && !err) {
+                    err = r;
+                } else if (!r) {
+                    n_applied++;
+                    bytes += end - beg;
+                }
+            }
+        }
+        if (err) {
+            LLAMA_LOG_WARN("warning: posix_madvise(.., %s) failed: %s\n",
+                           enable ? "POSIX_MADV_SEQUENTIAL" : "POSIX_MADV_NORMAL", strerror(err));
+        }
+        LLAMA_LOG_DEBUG("%s: %s over %zu of %zu ranges, %zu fragments, %.1f MiB\n", __func__,
+                        enable ? "sequential" : "normal", n_applied, advised.size(),
+                        mapped_fragments.size(), bytes / 1024.0 / 1024.0);
+        seq_on = enable;
     }
 
     static void align_range(size_t * first, size_t * last, size_t page_size) {
@@ -647,6 +695,9 @@ struct llama_mmap::impl {
             }
         }
     }
+    void advise_sequential(bool enable) {
+        GGML_UNUSED(enable);   // no equivalent of MADV_SEQUENTIAL for a file mapping here
+    }
 #else
     impl(struct llama_file * file, size_t prefetch, bool numa, const llama_mmap::ranges & lazy_ranges) {
         GGML_UNUSED(file);
@@ -662,6 +713,10 @@ struct llama_mmap::impl {
         GGML_UNUSED(last);
 
         throw std::runtime_error("mmap not supported");
+    }
+
+    void advise_sequential(bool enable) {
+        GGML_UNUSED(enable);
     }
 #endif
 
@@ -683,6 +738,8 @@ size_t llama_mmap::size() const { return pimpl->size; }
 void * llama_mmap::addr() const { return pimpl->addr; }
 
 void llama_mmap::unmap_fragment(size_t first, size_t last) { pimpl->unmap_fragment(first, last); }
+
+void llama_mmap::advise_sequential(bool enable) const { pimpl->advise_sequential(enable); }
 
 size_t llama_mmap::register_host(size_t first, size_t last, bool (*reg_fn)(void *, size_t), void (*unreg_fn)(void *)) {
 #ifdef _POSIX_MAPPED_FILES

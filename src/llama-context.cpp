@@ -242,6 +242,16 @@ llama_context::llama_context(
     cparams.fused_dsv4_hc_post = true;
     cparams.auto_fhc           = true;
 
+    {
+        // LLAMA_FUSED_HC=0: the hyper-connection pre / post steps stay plain ops (qwen4exp as before upstream #28901)
+        const char * LLAMA_FUSED_HC = getenv("LLAMA_FUSED_HC");
+        if (LLAMA_FUSED_HC && atoi(LLAMA_FUSED_HC) == 0) {
+            cparams.fused_dsv4_hc_pre  = false;
+            cparams.fused_dsv4_hc_post = false;
+            LLAMA_LOG_INFO("%s: LLAMA_FUSED_HC=0: fused hc pre / post disabled\n", __func__);
+        }
+    }
+
     // with causal attention, the batch size is limited by the context size
     cparams.n_batch = cparams.causal_attn ? std::min(cparams.n_ctx, params.n_batch) : params.n_batch;
 

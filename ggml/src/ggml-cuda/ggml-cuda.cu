@@ -4546,6 +4546,8 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *) backend->context;
 
     static const bool disable_fusion = getenv("GGML_CUDA_DISABLE_FUSION") != nullptr && std::atoi(getenv("GGML_CUDA_DISABLE_FUSION"));
+    // GGML_CUDA_TOPK_MOE_DEPS=0: no allocator deps for the top-k MoE fusion, so it fires only when the allocation allows it (as before upstream #28432)
+    static const bool topk_moe_deps = getenv("GGML_CUDA_TOPK_MOE_DEPS") == nullptr || std::atoi(getenv("GGML_CUDA_TOPK_MOE_DEPS"));
 
     auto add_alloc_deps = [&](size_t start, size_t last_node) {
 
@@ -4575,8 +4577,8 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
                 i += match.node_count - 1;
             }
 
-            if (cgraph->nodes[i]->op == GGML_OP_UNARY || cgraph->nodes[i]->op == GGML_OP_SOFT_MAX ||
-                    cgraph->nodes[i]->op == GGML_OP_ARGSORT) {
+            if (topk_moe_deps && (cgraph->nodes[i]->op == GGML_OP_UNARY || cgraph->nodes[i]->op == GGML_OP_SOFT_MAX ||
+                    cgraph->nodes[i]->op == GGML_OP_ARGSORT)) {
                 ggml_cuda_topk_moe_args args;
                 const bool              can_fuse = ggml_cuda_topk_moe_fusion(cgraph, i, args);
                 std::vector<ggml_op>    ops;

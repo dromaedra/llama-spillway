@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cstdlib>
 
 // bad metadata must be catchable: GGML_ASSERT aborts the whole process
 static void qwen4exp_require_nonzero(const llama_model_loader & ml, llm_kv kid, uint32_t value) {
@@ -301,6 +302,12 @@ std::unique_ptr<llm_graph_context> llama_model_qwen4exp::build_arch_graph(const 
 
 // Hyper-connections keep hc parallel residual streams [n_embd, hc, T] in place of layer norms.
 // Returns the mixed [n_embd, T] stream; `inject` gets the [hc, T] scatter weights.
+// LLAMA_HC_NORM_FUSE=0: rms_norm and mul stay apart, so the backend does not fuse them (as before upstream #28896)
+static bool qwen4exp_hc_norm_fuse() {
+    static const bool fuse = getenv("LLAMA_HC_NORM_FUSE") == nullptr || atoi(getenv("LLAMA_HC_NORM_FUSE")) != 0;
+    return fuse;
+}
+
 ggml_tensor * llama_model_qwen4exp::graph::build_hc_mix(
         ggml_tensor *  x,
         ggml_tensor *  w_norm,
@@ -316,11 +323,18 @@ ggml_tensor * llama_model_qwen4exp::graph::build_hc_mix(
     // grouped RMSNorm: reduce over one stream, then scale all streams with the [hc_dim] gamma
     // the converter folded each gamma to (1 + w)
     // the gamma view enters the graph first, so rms_norm and mul stay adjacent for backend fusion
-    ggml_tensor * w_norm_hc = ggml_reshape_2d(ctx0, w_norm, n_embd, hc);
-    ggml_build_forward_expand(gf, w_norm_hc);
+    ggml_tensor * xn = nullptr;
+    if (qwen4exp_hc_norm_fuse()) {
+        ggml_tensor * w_norm_hc = ggml_reshape_2d(ctx0, w_norm, n_embd, hc);
+        ggml_build_forward_expand(gf, w_norm_hc);
 
-    ggml_tensor * xn = ggml_mul(ctx0, ggml_rms_norm(ctx0, x, hparams.f_norm_rms_eps), w_norm_hc);
-    xn = ggml_reshape_2d(ctx0, xn, hc_dim, nt);
+        xn = ggml_mul(ctx0, ggml_rms_norm(ctx0, x, hparams.f_norm_rms_eps), w_norm_hc);
+        xn = ggml_reshape_2d(ctx0, xn, hc_dim, nt);
+    } else {
+        xn = ggml_rms_norm(ctx0, x, hparams.f_norm_rms_eps);
+        xn = ggml_reshape_2d(ctx0, xn, hc_dim, nt);
+        xn = ggml_mul(ctx0, xn, w_norm);
+    }
     cb(xn, "hc_norm", il);
 
     ggml_tensor * lo = build_lora_mm(w_down, xn);
@@ -1447,6 +1461,14 @@ ggml_tensor * llama_model_qwen4exp::graph::build_ple(
 
     // both norms group over one hc stream, with a weight over the whole hc*n_embd layout
     auto grouped_norm = [&](ggml_tensor * x, ggml_tensor * w) {
+        if (!qwen4exp_hc_norm_fuse()) {
+            ggml_tensor * t = ggml_reshape_3d(ctx0, x, n_embd, hc, n_tokens);
+            t = ggml_rms_norm(ctx0, t, hparams.f_norm_rms_eps);
+            t = ggml_reshape_2d(ctx0, t, hc_dim, n_tokens);
+            t = ggml_mul(ctx0, t, w);
+            return ggml_reshape_3d(ctx0, t, n_embd, hc, n_tokens);
+        }
+
         ggml_tensor * w_hc = ggml_reshape_2d(ctx0, w, n_embd, hc);
         ggml_build_forward_expand(gf, w_hc);
 

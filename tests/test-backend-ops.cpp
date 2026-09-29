@@ -10040,6 +10040,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_top_k(GGML_TYPE_F32, {202048, nrows, 1, 1}, k, true));
         }
     }
+    // qwen4exp QSA indexer: 2051 of n_kv cells per query token, one row per ubatch token
+    for (int64_t n_kv : {65536, 131072}) {
+        for (int64_t nrows : {1, 1024}) {
+            test_cases.emplace_back(new test_top_k(GGML_TYPE_F32, {n_kv, nrows, 1, 1}, 2051));
+            test_cases.emplace_back(new test_top_k(GGML_TYPE_F32, {n_kv, nrows, 1, 1}, 2051, true));
+        }
+    }
 
     for (int k : {1, 2, 3, 7, 15}) {
         test_cases.emplace_back(new test_top_k(GGML_TYPE_F32, {16, 10, 10, 10}, k));

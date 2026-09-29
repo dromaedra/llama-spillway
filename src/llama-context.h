@@ -378,6 +378,10 @@ private:
     // env: LLAMA_GRAPH_REUSE_DISABLE
     bool graph_reuse_disable = false;
 
+    // LLAMA_SCHED_KEEP=1: a re-reserve keeps the scheduler while max_nodes is unchanged (upstream #28872)
+    bool   sched_keep           = false;
+    size_t sched_keep_max_nodes = 0;
+
     // perf
     mutable int64_t t_start_us  = 0;
     mutable int64_t t_load_us   = 0;

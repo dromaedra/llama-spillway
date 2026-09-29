@@ -285,6 +285,15 @@ llama_context::llama_context(
         }
     }
 
+    {
+        const char * LLAMA_SCHED_KEEP = getenv("LLAMA_SCHED_KEEP");
+        sched_keep = LLAMA_SCHED_KEEP ? (atoi(LLAMA_SCHED_KEEP) != 0) : sched_keep;
+
+        if (sched_keep) {
+            LLAMA_LOG_INFO("%s: LLAMA_SCHED_KEEP: a re-reserve keeps the scheduler\n", __func__);
+        }
+    }
+
     // ref: https://github.com/ggml-org/llama.cpp/pull/17046#discussion_r2503085732
     cparams.n_ctx = GGML_PAD(cparams.n_ctx, 256);
 
@@ -603,8 +612,14 @@ void llama_context::sched_reserve() {
     gf_res_prev.reset(new llm_graph_result(max_nodes));
     gf_res_reserve.reset(new llm_graph_result(max_nodes));
 
-    sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, cparams.pipeline_parallel, cparams.op_offload));
-    ggml_backend_sched_set_async_cpu(sched.get(), cparams.sched_async_cpu);
+    // a kept scheduler re-plans in ggml_backend_sched_reserve and only grows its buffers
+    if (!sched || !sched_keep || max_nodes != sched_keep_max_nodes) {
+        sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, cparams.pipeline_parallel, cparams.op_offload));
+        ggml_backend_sched_set_async_cpu(sched.get(), cparams.sched_async_cpu);
+        sched_keep_max_nodes = max_nodes;
+    } else {
+        LLAMA_LOG_INFO("%s: keeping the scheduler (LLAMA_SCHED_KEEP)\n", __func__);
+    }
 
     llama_memory_context_ptr mctx;
     if (memory) {

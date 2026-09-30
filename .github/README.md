@@ -20,6 +20,8 @@ The base fork keeps the most-used experts of each layer in GPU memory, but alway
 
 **Result: decode graph splits went from 135 to 99 and GPU-to-GPU copies per token from 58 to 4, with no measurable change in prefill speed.**
 
+The base fork's author also arrived at the same fix independently (thecodacus/llama.cpp#16 (https://github.com/thecodacus/llama.cpp/pull/16)).
+
 ### 2. `LLAMA_MMAP_SEQ=auto`: read the model file sequentially, but only when it pays off
 
 **This was the biggest find for my setup by a mile.**

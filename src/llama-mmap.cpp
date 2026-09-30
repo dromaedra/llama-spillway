@@ -501,9 +501,11 @@ struct llama_mmap::impl {
         // mmap read-around stops for the whole file once f_ra.mmap_miss passes its limit, and a cold expert
         // walk never gets the page-cache hits back to lower it. MADV_SEQUENTIAL skips that check.
         // "auto" leaves it to advise_sequential(), which arms it only for batches large enough to use it.
+        // unset, empty, "0" and "off" leave it off; any other value advises the whole run.
         const char * seq_env = getenv("LLAMA_MMAP_SEQ");
-        const bool seq_auto   = seq_env && strcmp(seq_env, "auto") == 0;
-        const bool seq_advice = seq_env && !seq_auto;
+        const bool seq_off    = !seq_env || seq_env[0] == '\0' || strcmp(seq_env, "0") == 0 || strcmp(seq_env, "off") == 0;
+        const bool seq_auto   = !seq_off && strcmp(seq_env, "auto") == 0;
+        const bool seq_advice = !seq_off && !seq_auto;
 
         if (prefetch > 0) {
             const size_t page_size = sysconf(_SC_PAGESIZE);
